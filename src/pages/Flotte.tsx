@@ -19,13 +19,6 @@ export function Flotte() {
   const [controlLabel, setControlLabel] = useState(() => localStorage.getItem('flotteControlLabel') ?? 'Prochain contrôle technique');
   const [weeklyChargeLabel, setWeeklyChargeLabel] = useState(() => localStorage.getItem('flotteWeeklyChargeLabel') ?? 'Charge hebdomadaire');
   const [successRateLabel, setSuccessRateLabel] = useState(() => localStorage.getItem('flotteSuccessRateLabel') ?? 'Taux de réussite');
-  const [vehicleNames, setVehicleNames] = useState<Record<string, string>>(() => {
-    try { return JSON.parse(localStorage.getItem('flotteVehicleNames') ?? '{}'); } catch { return {}; }
-  });
-
-  useEffect(() => {
-    try { localStorage.setItem('flotteVehicleNames', JSON.stringify(vehicleNames)); } catch { /* ignore */ }
-  }, [vehicleNames]);
 
   useEffect(() => {
     try {
@@ -73,7 +66,7 @@ export function Flotte() {
                   <CarFrontIcon className="mt-0.5 h-4 w-4 shrink-0 text-ink-400" aria-hidden="true" />
                   <dt className="sr-only">Véhicule</dt>
                   <dd>
-                    <InlineEditableField value={vehicleNames[m.id] ?? m.vehicule} onSave={(next) => setVehicleNames((current) => ({ ...current, [m.id]: next }))} className="inline-block" />
+                    {m.vehicule}
                     <span className="ml-2 rounded bg-canvas px-1.5 py-0.5 text-xs font-semibold tabular-nums text-ink-800">
                       {m.immatriculation}
                     </span>
@@ -116,7 +109,7 @@ export function Flotte() {
         <ul className="divide-y divide-line">
           {moniteurs.map((m) =>
           <li key={m.id} className="flex flex-wrap items-center gap-4 px-6 py-4">
-              <span className="min-w-[220px] flex-1 text-sm font-medium text-ink-900"><InlineEditableField value={vehicleNames[m.id] ?? m.vehicule} onSave={(next) => setVehicleNames((current) => ({ ...current, [m.id]: next }))} className="inline-block" /></span>
+              <span className="min-w-[220px] flex-1 text-sm font-medium text-ink-900">{m.vehicule}</span>
               <span className="text-sm tabular-nums text-ink-700">{m.immatriculation}</span>
               <span className="text-sm text-ink-500"><InlineEditableField value={`${controlLabel} : ${m.prochainControle}`} onSave={() => undefined} className="inline-block" /></span>
             </li>
