@@ -1,7 +1,7 @@
 import { useState, useEffect, ReactNode } from 'react';
 import { Candidat, DocumentDossier, Examen, Facture, Message, Reservation } from '../types';
 import { candidats as initialCandidats } from '../data/candidats';
-import { getCurrentWeekDays, reservations as initialReservations } from '../data/reservations';
+import { reservations as initialReservations } from '../data/reservations';
 import { factures as initialFactures } from '../data/facturation';
 import { documents as initialDocuments } from '../data/documents';
 import { examens as initialExamens } from '../data/examens';
@@ -18,18 +18,9 @@ function loadJson<T>(key: string, fallback: T): T {
   }
 }
 
-function normalizeReservations(items: Reservation[]): Reservation[] {
-  const week = getCurrentWeekDays();
-  return items.map((reservation) => {
-    if (reservation.date) return reservation;
-    const dayIndex = Math.max(0, Math.min(6, reservation.jour % 7));
-    return { ...reservation, jour: dayIndex, date: week[dayIndex].iso };
-  });
-}
-
 export function AppContextProvider({ children }: { children: ReactNode }) {
   const [candidats, setCandidats] = useState<Candidat[]>(() => loadJson('candidats', initialCandidats));
-  const [reservations, setReservations] = useState<Reservation[]>(() => normalizeReservations(loadJson('reservations', initialReservations)));
+  const [reservations, setReservations] = useState<Reservation[]>(() => loadJson('reservations', initialReservations));
   const [factures, setFactures] = useState<Facture[]>(() => loadJson('factures', initialFactures));
   const [documents, setDocuments] = useState<DocumentDossier[]>(() => loadJson('documents', initialDocuments));
   const [examens, setExamens] = useState<Examen[]>(() => loadJson('examens', initialExamens));
@@ -43,6 +34,26 @@ export function AppContextProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     localStorage.setItem('reservations', JSON.stringify(reservations));
   }, [reservations]);
+
+  // One-time migration: if stored reservations exist but haven't been migrated to
+  // the 30-minute slots dataset, replace them with `initialReservations` so
+  // the app reflects the updated intervals. This avoids requiring the user to
+  // manually clear localStorage.
+  useEffect(() => {
+    try {
+      const migrated = localStorage.getItem('reservations_migrated_30min');
+      const stored = localStorage.getItem('reservations');
+      if (!migrated && stored) {
+        // replace stored reservations with initial set and mark migrated
+        setReservations(initialReservations);
+        localStorage.setItem('reservations_migrated_30min', '1');
+      }
+    } catch {
+      // ignore localStorage errors
+    }
+    // run only on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('factures', JSON.stringify(factures));
@@ -59,73 +70,6 @@ export function AppContextProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     localStorage.setItem('messages', JSON.stringify(messages));
   }, [messages]);
-
-  useEffect(() => {
-    const onSharedEdit = (event: Event) => {
-      const detail = (event as CustomEvent<{ key?: string; value?: string }>).detail;
-      const key = detail?.key;
-      if (!key || key === 'speedpermis_shared_known_keys' || key === 'speedpermis_authenticated') return;
-
-      let parsed: unknown;
-      try {
-        parsed = detail.value ? JSON.parse(detail.value) : undefined;
-      } catch {
-        return;
-      }
-
-      switch (key) {
-        case 'candidats':
-          if (Array.isArray(parsed)) setCandidats(parsed as Candidat[]);
-          break;
-        case 'reservations':
-          if (Array.isArray(parsed)) setReservations(normalizeReservations(parsed as Reservation[]));
-          else setReservations([]);
-          break;
-        case 'factures':
-          if (Array.isArray(parsed)) setFactures(parsed as Facture[]);
-          else setFactures([]);
-          break;
-        case 'documents':
-          if (Array.isArray(parsed)) setDocuments(parsed as DocumentDossier[]);
-          else setDocuments([]);
-          break;
-        case 'examens':
-          if (Array.isArray(parsed)) setExamens(parsed as Examen[]);
-          else setExamens([]);
-          break;
-        case 'messages':
-          if (Array.isArray(parsed)) setMessages(parsed as Message[]);
-          else setMessages([]);
-          break;
-        default:
-          break;
-      }
-    };
-
-    window.addEventListener('speedpermis:shared-edit', onSharedEdit);
-    return () => window.removeEventListener('speedpermis:shared-edit', onSharedEdit);
-  }, []);
-
-  // One-time demo migration: expand the reservation planner with the richer
-  // weekly sample data shipped with this version. Existing user-created rows
-  // are preserved; only missing demo rows are added once.
-  useEffect(() => {
-    try {
-      const migrated = localStorage.getItem('reservations_demo_expanded_v1');
-      if (!migrated) {
-        setReservations((current) => {
-          const existingIds = new Set(current.map((item) => item.id));
-          const additions = initialReservations
-            .filter((item) => item.id.startsWith('seed') && !existingIds.has(item.id))
-            .map((item) => normalizeReservations([item])[0]);
-          return additions.length ? [...current, ...additions] : current;
-        });
-        localStorage.setItem('reservations_demo_expanded_v1', '1');
-      }
-    } catch {
-      // ignore storage access failures
-    }
-  }, []);
 
   // One-time migration: replace any stored messages (e.g., created via the UI)
   // with the initial sample messages from the repo so site-inserted messages

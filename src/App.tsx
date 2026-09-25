@@ -33,10 +33,19 @@ function LandingPage() {
 }
 
 export function App() {
-  const AUTH_KEY = 'speedpermis_authenticated';
-  const [authentifie, setAuthentifie] = useState(() => {
-    try { return window.localStorage.getItem(AUTH_KEY) === '1'; } catch { return false; }
-  });
+  const [authentifie, setAuthentifie] = useState(false);
+
+  useEffect(() => {
+    const onSharedEdit = () => {
+      // Refresh only when another browser changed shared content.
+      // This keeps React state/data in sync without interrupting an active editor.
+      const active = document.activeElement as HTMLElement | null;
+      if (active?.matches('input, textarea, select, [contenteditable=\"true\"]')) return;
+      window.location.reload();
+    };
+    window.addEventListener('speedpermis:shared-edit', onSharedEdit);
+    return () => window.removeEventListener('speedpermis:shared-edit', onSharedEdit);
+  }, []);
 
   return (
     <AppContextProvider>
@@ -52,12 +61,12 @@ export function App() {
               {/* After the first login, the user reaches the original SpeedPermis login. */}
               <Route
                 path="/speedpermis/connexion"
-                element={<SpeedPermisConnexion onLogin={() => { window.localStorage.setItem(AUTH_KEY, '1'); setAuthentifie(true); }} />}
+                element={<SpeedPermisConnexion onLogin={() => setAuthentifie(true)} />}
               />
               <Route path="*" element={<Navigate to="/" replace />} />
             </>
           ) : (
-            <Route element={<AppLayout onLogout={() => { window.localStorage.removeItem(AUTH_KEY); setAuthentifie(false); }} />}>
+            <Route element={<AppLayout onLogout={() => setAuthentifie(false)} />}>
               <Route path="/" element={<Dashboard />} />
               <Route path="/candidats" element={<Candidats />} />
               <Route path="/candidats/:id" element={<CandidatDetail />} />

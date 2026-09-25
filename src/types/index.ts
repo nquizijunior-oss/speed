@@ -69,7 +69,6 @@ export interface Reservation {
   vehicule: string;
   type: 'Leçon de conduite' | 'Conduite accompagnée' | 'Examen blanc' | 'Examen pratique' | 'Cours de code';
   jour: number;
-  date?: string;
   debut: string;
   fin: string;
   statut: StatutReservation;

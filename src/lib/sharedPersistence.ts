@@ -1,10 +1,8 @@
 const TABLE = 'app_shared_edits';
 const SYNC_EVENT = 'speedpermis:shared-edit';
-const REALTIME_STATUS_EVENT = 'speedpermis:realtime-status';
 const KNOWN_KEYS = 'speedpermis_shared_known_keys';
-const AUTH_KEY = 'speedpermis_authenticated';
 const SOURCE_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-const RECONNECT_MS = 2500;
+const POLL_MS = 2000;
 
 let ready = false;
 let endpoint = '';
@@ -12,12 +10,7 @@ let publicKey = '';
 let originalSetItem: Storage['setItem'] | null = null;
 let originalRemoveItem: Storage['removeItem'] | null = null;
 let applyingRemote = false;
-let socket: WebSocket | null = null;
-let reconnectTimer: number | undefined;
-let heartbeatTimer: number | undefined;
-let joinRef = 0;
-let realtimeConnected = false;
-let stopped = false;
+let timer: number | undefined;
 
 function config() {
   const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
@@ -27,24 +20,15 @@ function config() {
 }
 
 function isInternal(key: string) {
-  return key === KNOWN_KEYS || key === AUTH_KEY;
+  return key === KNOWN_KEYS;
 }
 
 function safeSet(key: string, value: string) {
   try { (originalSetItem || Storage.prototype.setItem).call(window.localStorage, key, value); } catch { /* ignore */ }
 }
 
-function safeRemove(key: string) {
-  try { (originalRemoveItem || Storage.prototype.removeItem).call(window.localStorage, key); } catch { /* ignore */ }
-}
-
 function emit(key: string, value?: string) {
   window.dispatchEvent(new CustomEvent(SYNC_EVENT, { detail: { key, value, source: SOURCE_ID } }));
-}
-
-function emitRealtimeStatus(status: 'connecting' | 'connected' | 'disconnected') {
-  realtimeConnected = status === 'connected';
-  window.dispatchEvent(new CustomEvent(REALTIME_STATUS_EVENT, { detail: { status } }));
 }
 
 async function request(path = '', init: RequestInit = {}) {
@@ -106,9 +90,11 @@ async function syncFromServer() {
         }
       }
 
+      // Only delete keys that this app previously knew were shared. This prevents
+      // unrelated browser localStorage entries from being deleted.
       for (const key of knownKeys) {
         if (!remoteKeys.has(key) && window.localStorage.getItem(key) !== null) {
-          safeRemove(key);
+          (originalRemoveItem || Storage.prototype.removeItem).call(window.localStorage, key);
           emit(key);
         }
       }
@@ -122,124 +108,6 @@ async function syncFromServer() {
   }
 }
 
-function realtimeUrl() {
-  const wsBase = endpoint.replace(/^http/, 'ws');
-  return `${wsBase}/realtime/v1/websocket?apikey=${encodeURIComponent(publicKey)}&vsn=1.0.0`;
-}
-
-function sendRealtime(event: string, payload: unknown, ref?: string) {
-  if (!socket || socket.readyState !== WebSocket.OPEN) return;
-  socket.send(JSON.stringify({
-    topic: `realtime:${TABLE}`,
-    event,
-    payload,
-    ref: ref ?? String(++joinRef),
-  }));
-}
-
-function clearRealtimeTimers() {
-  if (reconnectTimer) window.clearTimeout(reconnectTimer);
-  if (heartbeatTimer) window.clearInterval(heartbeatTimer);
-  reconnectTimer = undefined;
-  heartbeatTimer = undefined;
-}
-
-function scheduleReconnect() {
-  if (stopped || reconnectTimer || !ready) return;
-  reconnectTimer = window.setTimeout(() => {
-    reconnectTimer = undefined;
-    connectRealtime();
-  }, RECONNECT_MS);
-}
-
-function handleRealtimeChange(data: any) {
-  const change = data?.data ?? data;
-  const record = change?.record as { key?: string; value?: string; updated_by?: string } | undefined;
-  const oldRecord = change?.old_record as { key?: string } | undefined;
-  const eventType = change?.type;
-
-  if (eventType === 'DELETE') {
-    const key = oldRecord?.key;
-    if (!key || isInternal(key)) return;
-    if (window.localStorage.getItem(key) !== null) {
-      applyingRemote = true;
-      try { safeRemove(key); } finally { applyingRemote = false; }
-      emit(key);
-    }
-    return;
-  }
-
-  const key = record?.key;
-  if (!key || isInternal(key) || typeof record?.value !== 'string') return;
-  if (record.updated_by === SOURCE_ID) return;
-
-  if (window.localStorage.getItem(key) !== record.value) {
-    applyingRemote = true;
-    try { safeSet(key, record.value); } finally { applyingRemote = false; }
-    emit(key, record.value);
-  }
-}
-
-function connectRealtime() {
-  if (stopped || !ready || typeof WebSocket === 'undefined') return;
-  clearRealtimeTimers();
-  try { socket?.close(); } catch { /* ignore */ }
-
-  emitRealtimeStatus('connecting');
-  const ws = new WebSocket(realtimeUrl());
-  socket = ws;
-
-  ws.onopen = () => {
-    if (socket !== ws) return;
-    sendRealtime('phx_join', {
-      config: {
-        broadcast: { ack: false, self: false },
-        presence: { key: '' },
-        postgres_changes: [{ event: '*', schema: 'public', table: TABLE }],
-      },
-      access_token: publicKey,
-    }, String(++joinRef));
-
-    heartbeatTimer = window.setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        sendRealtime('heartbeat', {}, String(++joinRef));
-      }
-    }, 25_000);
-  };
-
-  ws.onmessage = (message) => {
-    try {
-      const parsed = JSON.parse(message.data);
-      if (parsed.event === 'phx_reply' && parsed.payload?.status === 'ok') {
-        emitRealtimeStatus('connected');
-        void syncFromServer();
-        return;
-      }
-      if (parsed.event === 'postgres_changes') {
-        handleRealtimeChange(parsed.payload);
-        return;
-      }
-      if (parsed.event === 'system_error' || parsed.event === 'phx_error') {
-        console.warn('Supabase Realtime error:', parsed.payload);
-      }
-    } catch (error) {
-      console.warn('Could not process Supabase Realtime message:', error);
-    }
-  };
-
-  ws.onerror = () => {
-    emitRealtimeStatus('disconnected');
-  };
-
-  ws.onclose = () => {
-    if (socket !== ws) return;
-    socket = null;
-    clearRealtimeTimers();
-    emitRealtimeStatus('disconnected');
-    scheduleReconnect();
-  };
-}
-
 export async function initSharedPersistence() {
   if (typeof window === 'undefined' || ready) return;
   const cfg = config();
@@ -248,7 +116,6 @@ export async function initSharedPersistence() {
     return;
   }
 
-  stopped = false;
   endpoint = cfg.url;
   publicKey = cfg.key;
   originalSetItem = window.localStorage.setItem.bind(window.localStorage);
@@ -260,14 +127,11 @@ export async function initSharedPersistence() {
     const rows = await fetchRows();
     if (rows.length) {
       applyingRemote = true;
-      try {
-        for (const row of rows) {
-          if (!isInternal(row.key)) safeSet(row.key, row.value);
-        }
-        safeSet(KNOWN_KEYS, JSON.stringify(rows.map(row => row.key).filter(key => !isInternal(key))));
-      } finally {
-        applyingRemote = false;
+      for (const row of rows) {
+        if (!isInternal(row.key)) safeSet(row.key, row.value);
       }
+      safeSet(KNOWN_KEYS, JSON.stringify(rows.map(row => row.key).filter(key => !isInternal(key))));
+      applyingRemote = false;
     } else if (existingLocal.length) {
       const payload = existingLocal.map(([key, value]) => ({ key, value, updated_by: SOURCE_ID }));
       const response = await request('', {
@@ -293,21 +157,14 @@ export async function initSharedPersistence() {
 
   ready = true;
   void syncFromServer();
-  connectRealtime();
+  timer = window.setInterval(() => void syncFromServer(), POLL_MS);
 }
 
 export function hasSharedPersistence() {
   return Boolean(config());
 }
 
-export function isRealtimeConnected() {
-  return realtimeConnected;
-}
-
 export function stopSharedPersistence() {
-  stopped = true;
-  clearRealtimeTimers();
-  try { socket?.close(); } catch { /* ignore */ }
-  socket = null;
-  emitRealtimeStatus('disconnected');
+  if (timer) window.clearInterval(timer);
+  timer = undefined;
 }
